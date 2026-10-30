@@ -103,7 +103,7 @@ for (const d of ["extension", "shared", "scripts", "site", "test"]) {
     src[`squeek-pal/${d}/${k}`] = [v, { mtime: FIXED }];
   }
 }
-for (const f of ["package.json", "package-lock.json", "tsconfig.json", "vite.config.ts", "README.md", "DESIGN.md"]) {
+for (const f of ["package.json", "package-lock.json", "tsconfig.json", "vite.config.ts", "README.md", "DESIGN.md", "artifacts/validation.md"]) {
   try {
     src[`squeek-pal/${f}`] = [new Uint8Array(readFileSync(join(root, f))), { mtime: FIXED }];
   } catch {

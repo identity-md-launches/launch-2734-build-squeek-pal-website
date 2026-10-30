@@ -1,10 +1,11 @@
 import "./style.css";
 import { drawChest, drawPal, palCanvas, SPRITE_H, SPRITE_W, type Pose } from "../../shared/art";
 import { startChestPlacer } from "../../shared/chests";
-import { mountPanel, PANEL_CSS } from "../../shared/panel";
+import { mountPanel, PANEL_CSS, type Tab } from "../../shared/panel";
 import { drawCard } from "../../shared/card";
 import { defaultState, type Lang, type SaveState } from "../../shared/state";
 import { liveStrip } from "../../shared/ui";
+import { wheelMode } from "../../shared/rules";
 import { mountWidget } from "../../shared/widget";
 import { demoStore, liveOnly, type DemoStore } from "./demoStore";
 import { samplePosts } from "./posts";
@@ -20,12 +21,17 @@ let cleanup: (() => void)[] = [];
 
 const s = (k: SiteKey) => st(lang, k);
 const main = document.getElementById("main")!;
+let currentRoute: "home" | "demo" | "install" | "missing" = "home";
+document.querySelector(".skip")!.addEventListener("click", e => {
+  e.preventDefault();
+  main.focus();
+});
 
 function route(): "home" | "demo" | "install" | "missing" {
   const h = location.hash.replace(/^#\/?/, "");
   if (h === "" || h === "top") return "home";
   if (h === "demo" || h === "install") return h;
-  if (!h.startsWith("/") && document.getElementById(h)) return "home";
+  if (h === "main" || (document.getElementById(h) && currentRoute !== "missing")) return currentRoute;
   return "missing";
 }
 
@@ -53,7 +59,7 @@ function header() {
 }
 
 /** Animated canvas of the pal; holds still under reduced motion. */
-function animatedPal(scale: number, poses: Pose[], label: string, hat: string | null = null, wheel: string | null = null): HTMLCanvasElement {
+function animatedPal(scale: number, getPoses: () => Pose[], label: string, hat: string | null = null, wheel: string | null = null): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = SPRITE_W * scale;
   c.height = SPRITE_H * scale;
@@ -65,10 +71,12 @@ function animatedPal(scale: number, poses: Pose[], label: string, hat: string | 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
     ctx.scale(scale, scale);
+    const poses = getPoses();
     const pose = poses[Math.floor(frame / 20) % poses.length];
     drawPal(ctx, { pose, frame, hat, wheel, mood: "happy" });
   };
   draw();
+  c.addEventListener("pal-update", draw);
   const id = window.setInterval(() => {
     if (reduced.matches || document.hidden) return;
     frame++;
@@ -115,8 +123,8 @@ function home() {
         <ul class="features">
           <li><h3>${s("f1t")}</h3><p>${s("f1d")}</p></li>
           <li><h3>${s("f2t")}</h3><div class="shot-post" id="shot-post"></div><p>${s("f2d")}</p></li>
-          <li><h3>${s("f3t")}</h3><p>${s("f3d")}</p></li>
-          <li><h3>${s("f4t")}</h3><div class="shot-card" id="shot-card"></div><p>${s("f4d")}</p></li>
+          <li><h3>${s("f3t")}</h3><div class="shot-chest" id="shot-golden"></div><p>${s("f3d")}</p></li>
+          <li class="feature-card"><h3>${s("f4t")}</h3><div class="shot-card" id="shot-card"></div><p>${s("f4d")}</p></li>
         </ul>
       </div>
     </section>
@@ -153,7 +161,9 @@ function home() {
       </div>
     </section>`;
 
-  document.getElementById("hero-stage")!.append(animatedPal(8, ["run"], s("heroArtLabel"), "party", "sunset"));
+  let heroPoses: Pose[] = ["sit"];
+  const heroPal = animatedPal(8, () => heroPoses, s("heroArtLabel"), "party", "sunset");
+  document.getElementById("hero-stage")!.append(heroPal);
   const poses = document.getElementById("poses")!;
   (["walk", "eat", "nap", "run"] as Pose[]).forEach((p) => {
     const c = palCanvas(document, 3, { pose: p, frame: 1, hat: p === "run" ? "crown" : p === "walk" ? "acorn" : null, wheel: "mint", mood: "happy" });
@@ -161,8 +171,13 @@ function home() {
     poses.append(c);
   });
   const post = document.getElementById("shot-post")!;
-  post.innerHTML = `<span aria-hidden="true">Reply</span><span aria-hidden="true">Repost</span><span aria-hidden="true">Like</span>`;
-  post.append(chestCanvas("normal"), chestCanvas("golden"));
+  post.innerHTML = samplePosts(1, lang);
+  post.querySelector('[role="group"]')!.append(chestCanvas("normal"));
+  const shotPal = palCanvas(document, 3, { pose: "sit", frame: 0, hat: "acorn", wheel: null, mood: "happy" });
+  shotPal.classList.add("shot-pal");
+  shotPal.setAttribute("aria-hidden", "true");
+  post.append(shotPal);
+  document.getElementById("shot-golden")!.append(chestCanvas("golden"));
   const sample: SaveState = defaultState(Date.now(), lang);
   sample.pet.hat = "crown";
   sample.pet.wheel = "golden";
@@ -171,22 +186,26 @@ function home() {
   const card = document.createElement("canvas");
   drawCard(card, sample);
   card.setAttribute("role", "img");
-  card.setAttribute("aria-label", "Pet card: Pip, Adult, 342 Seeds");
+  card.setAttribute("aria-label", s("cardLabel"));
   document.getElementById("shot-card")!.append(card);
 
   const live = document.getElementById("live")!;
-  const show = (st: SaveState) => (live.innerHTML = `<div class="sp-root" data-theme="light">${liveStrip(lang, st, Date.now())}</div>`);
-  show(defaultState(Date.now(), lang));
+  const show = (st: SaveState) => {
+    const mode = wheelMode(st.sync, Date.now());
+    heroPoses = [mode === "running" ? "run" : mode === "idle" ? "nap" : "sit"];
+    heroPal.dispatchEvent(new Event("pal-update"));
+    live.innerHTML = `<div class="sp-root" data-theme="light">${liveStrip(lang, st, Date.now())}</div>`;
+  };
   cleanup.push(liveOnly(show, lang));
 }
 
 let demo: DemoStore | null = null;
+let demoTab: Tab = "pet";
 
 function demoPage() {
   main.innerHTML = `
     <section class="wrap section demo-head">
       <h1>${s("demoTitle")}</h1>
-      <p class="lead">${s("demoLine")}</p>
     </section>
     <section class="wrap demo">
       <div class="demo-col">
@@ -199,6 +218,7 @@ function demoPage() {
           <button class="btn" type="button" id="more">${s("demoMore")}</button>
           <button class="btn" type="button" id="reset">${s("demoReset")}</button>
         </div>
+        <p class="small">${s("demoLine")}</p>
       </div>
       <div class="demo-col">
         <h2 class="col-h">${s("demoPopup")}</h2>
@@ -209,11 +229,11 @@ function demoPage() {
   const store = demo;
   if (store.get()?.settings.lang !== lang) void store.dispatch({ type: "settings", patch: { lang } });
   const tl = document.getElementById("timeline")!;
-  tl.innerHTML = samplePosts(40);
+  tl.innerHTML = samplePosts(40, lang);
   const phone = document.getElementById("phone")!;
   const widget = mountWidget({ store, container: phone, contained: true, pageKey: () => "/demo", theme: () => "light" });
   const stopChests = startChestPlacer({ store, root: tl, scrollRoot: tl, onOpened: (fx) => widget.toast(fx) });
-  const more = () => tl.insertAdjacentHTML("beforeend", samplePosts(30));
+  const more = () => tl.insertAdjacentHTML("beforeend", samplePosts(30, lang));
   tl.addEventListener("scroll", () => {
     if (tl.scrollTop + tl.clientHeight > tl.scrollHeight - 400) more();
   });
@@ -224,13 +244,13 @@ function demoPage() {
   const shadow = popupHost.attachShadow({ mode: "open" });
   shadow.innerHTML = `<style>${PANEL_CSS} .sp-root{min-block-size:520px;border-radius:16px}</style><div data-theme="light"></div>`;
   const shareUrl = location.href.split("#")[0];
-  const unPanel = mountPanel(shadow.querySelector("div")!, { store, shareUrl });
+  const unPanel = mountPanel(shadow.querySelector("div")!, { store, shareUrl, initialTab: demoTab, onTabChange: tab => { demoTab = tab; } });
   const unLang = store.subscribe((st) => {
     if (st.settings.lang !== lang) {
       lang = st.settings.lang;
       localStorage.setItem("squeekpal-lang", lang);
-      document.documentElement.lang = lang;
-      header();
+      render(false);
+      document.querySelector<HTMLElement>("#popup")?.shadowRoot?.querySelector<HTMLElement>('[data-k="lang"]')?.focus();
     }
   });
   cleanup.push(() => {
@@ -285,14 +305,15 @@ function render(moveFocus = true) {
   document.documentElement.lang = lang;
   header();
   const r = route();
+  currentRoute = r;
   if (r === "home") home();
   else if (r === "demo") demoPage();
   else if (r === "install") installPage();
   else missing();
-  const titles = { home: "Squeek Pal: a pixel hamster for x.com", demo: `${s("demoTitle")} · Squeek Pal`, install: `${s("installTitle")} · Squeek Pal`, missing: "Squeek Pal" };
+  const titles = { home: s("homeTitle"), demo: `${s("demoTitle")} · Squeek Pal`, install: `${s("installTitle")} · Squeek Pal`, missing: "Squeek Pal" };
   document.title = titles[r];
   const anchor = location.hash.replace(/^#\/?/, "");
-  if (r === "home" && anchor && document.getElementById(anchor)) document.getElementById(anchor)!.scrollIntoView();
+  if (anchor && anchor !== "main" && document.getElementById(anchor)) document.getElementById(anchor)!.scrollIntoView();
   else if (moveFocus) {
     window.scrollTo(0, 0);
     if (initialised) {

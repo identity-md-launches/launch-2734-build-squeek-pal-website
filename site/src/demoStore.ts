@@ -2,10 +2,32 @@
 // It polls the real Squeekchain API on the same schedule as the extension's worker.
 import { fetchEvents, fetchStatus } from "../../shared/api";
 import { reduce, type Action, type Effects } from "../../shared/game";
-import { defaultState, migrate, type Lang, type SaveState } from "../../shared/state";
+import { defaultState, migrate, type Lang, type SaveState, type WheelSnapshot } from "../../shared/state";
 import type { PalStore } from "../../shared/store";
 
 const KEY = "squeekpal-demo";
+
+// Keep the reading and request schedule across route/language renders, and share
+// it with the demo so navigating never starts an extra /status request.
+let liveState = defaultState(Date.now());
+let nextPoll = 0;
+let pending: Promise<WheelSnapshot> | null = null;
+const rememberRetry = (retryAfter: number) => {
+  liveState.sync = { ...liveState.sync, reach: "error", retryAfter: Math.max(liveState.sync.retryAfter, retryAfter) };
+};
+function statusReading(): Promise<WheelSnapshot> {
+  if (pending) return pending;
+  const now = Date.now();
+  if (now < Math.max(nextPoll, liveState.sync.retryAfter)) return Promise.resolve(liveState.sync);
+  nextPoll = now + 60_000;
+  pending = fetchStatus(fetch.bind(window), now).then(snap => {
+    // An /events 429 may have arrived while /status was in flight.
+    if (liveState.sync.retryAfter > Date.now()) snap = { ...snap, reach: "error", retryAfter: Math.max(snap.retryAfter, liveState.sync.retryAfter) };
+    liveState = reduce(liveState, { type: "status", snap }, { now: Date.now(), rand: Math.random }).state;
+    return liveState.sync;
+  }).finally(() => { pending = null; });
+  return pending;
+}
 
 export interface DemoStore extends PalStore {
   reset(): void;
@@ -38,12 +60,15 @@ export function demoStore(lang: Lang): DemoStore {
 
   const pollStatus = async () => {
     if (state.sync.retryAfter > Date.now()) return;
-    apply({ type: "status", snap: await fetchStatus(fetch.bind(window), Date.now()) });
+    apply({ type: "status", snap: await statusReading() });
   };
   const pollEvents = async () => {
-    if (state.sync.retryAfter > Date.now()) return;
+    if (Math.max(state.sync.retryAfter, liveState.sync.retryAfter) > Date.now()) return;
     const r = await fetchEvents(fetch.bind(window), Date.now());
-    if (r && !r.retryAfter) apply({ type: "events", events: r.events });
+    if (r?.retryAfter) {
+      rememberRetry(r.retryAfter);
+      apply({ type: "status", snap: { ...state.sync, reach: "error", retryAfter: r.retryAfter } });
+    } else if (r) apply({ type: "events", events: r.events });
   };
   // the open demo page stands in for an open x.com tab
   const beat = () => !document.hidden && apply({ type: "heartbeat" });
@@ -72,13 +97,13 @@ export function demoStore(lang: Lang): DemoStore {
 
 /** A read-only store for the home page's live strip: polls /status once a minute. */
 export function liveOnly(onChange: (s: SaveState) => void, lang: Lang): () => void {
-  let s = defaultState(Date.now(), lang);
+  let active = true;
+  onChange(liveState);
   const poll = async () => {
-    const snap = await fetchStatus(fetch.bind(window), Date.now());
-    s = reduce(s, { type: "status", snap }, { now: Date.now(), rand: Math.random }).state;
-    onChange(s);
+    await statusReading();
+    if (active) onChange(liveState);
   };
   void poll();
   const id = window.setInterval(poll, 60_000);
-  return () => clearInterval(id);
+  return () => { active = false; clearInterval(id); };
 }

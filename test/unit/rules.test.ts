@@ -158,12 +158,74 @@ describe("festival", () => {
     const r = applyFestival({ events: [ev("old", T0 - 2 * HOUR), ev("x", T0, "measurement.sample")], seenIds: [], installedAt: T0, until: 0, now: T0 });
     expect(r.started).toBe(false);
     expect(r.seenIds).toContain("old");
-    const parsed = parseEvents({ events: [{ id: 7, type: "measurement.distance_milestone", timestamp: new Date(T0).toISOString() }] });
+    const parsed = parseEvents({ events: [{ id: 7, type: "measurement.distance_milestone", occurredAt: new Date(T0).toISOString() }] });
     expect(parsed[0]).toEqual({ id: "7", type: "measurement.distance_milestone", at: T0 });
+  });
+  it("parses API event dates and starts the festival through the reducer", () => {
+    const events = parseEvents({ events: [
+      { id: "distance", type: "measurement.distance_milestone", occurredAt: new Date(T0 - 60_000).toISOString(), recordedAt: new Date(T0).toISOString() },
+      { id: "record", type: "measurement.speed_record", recordedAt: new Date(T0).toISOString() },
+      { id: "old", type: "measurement.speed_record", occurredAt: new Date(T0 - 2 * HOUR).toISOString() },
+    ] });
+    expect(events).toHaveLength(3);
+    expect(events[0].at).toBe(T0 - 60_000);
+    const state = reduce(defaultState(T0), { type: "events", events }, { now: T0, rand: Math.random }).state;
+    expect(state.festival.until).toBe(T0 + HOUR);
+    expect(state.festival.seenIds).toEqual(["distance", "record", "old"]);
+    const again = reduce(state, { type: "events", events }, { now: T0 + 60_000, rand: Math.random }).state;
+    expect(again.festival).toEqual(state.festival);
+    expect(again.log.filter(l => l.key === "log.festival")).toHaveLength(1);
   });
 });
 
 describe("save", () => {
+  it("treats even checksum-valid imported saves as untrusted data", () => {
+    const raw: any = defaultState(T0);
+    const markup = '<img src=x onerror="window.__xss=1">';
+    raw.seeds = markup;
+    raw.pet.xp = markup;
+    raw.pet.stats.hunger = markup;
+    raw.pet.stats.energy = -10;
+    raw.pet.hat = markup;
+    raw.pet.wheel = "sunflower";
+    raw.inventory = { sunflower: markup, carrot: 3, unknown: 999 };
+    raw.owned = ["crown", "crown", markup];
+    raw.earn = { hourStart: markup, earnedThisHour: 999, totalRunSeeds: markup };
+    raw.settings = { lang: markup, chestsOn: "false", pos: { x: markup, y: -500 }, hiddenPaths: [markup, "/home"] };
+    raw.chests.pending = [{ id: markup, kind: "normal", createdAt: T0 }, { id: "safe1", kind: "golden", createdAt: T0 }, { id: "unsafe2", kind: markup, createdAt: T0 }];
+    raw.quests = { day: squeekDay(T0), list: [{ id: markup, goal: markup }, { id: "open5", progress: markup, goal: 999 }] };
+    raw.achievements = ["firstChest", markup];
+    const s = importCode(exportCode(raw), T0)!;
+    expect(s.seeds).toBe(defaultState(T0).seeds);
+    expect(s.pet.xp).toBe(0);
+    expect(s.pet.stats.hunger).toBe(80);
+    expect(s.pet.stats.energy).toBe(0);
+    expect(s.pet.hat).toBeNull();
+    expect(s.pet.wheel).toBeNull();
+    expect(s.inventory).toEqual({ sunflower: 0, carrot: 3 });
+    expect(s.owned).toEqual(["crown"]);
+    expect(s.earn.earnedThisHour).toBe(300);
+    expect(s.earn.totalRunSeeds).toBe(0);
+    expect(s.settings.lang).toBe("en");
+    expect(s.settings.chestsOn).toBe(true);
+    expect(s.settings.pos).toBeNull();
+    expect(s.settings.hiddenPaths).toEqual(["/home"]);
+    expect(s.chests.pending).toEqual([{ id: "safe1", kind: "golden", createdAt: T0 }]);
+    expect(s.quests.list).toHaveLength(3);
+    expect(s.quests.list.every(q => q.progress === 0 && q.goal <= 5)).toBe(true);
+    expect(s.achievements).toEqual(["firstChest"]);
+    expect(() => reduce(s, { type: "feed" }, { now: T0, rand: Math.random })).not.toThrow();
+  });
+  it("repairs malformed nested fields without dropping a valid save", () => {
+    for (const value of [null, false, "<b>bad</b>", [], 123]) {
+      const s = migrate({ version: 2, pet: value, chests: value, earn: value, inventory: value, quests: value, achievements: value, settings: value, festival: value, sync: value, log: value }, T0);
+      expect(s.pet.stats).toEqual(defaultState(T0).pet.stats);
+      expect(s.seeds).toBe(10);
+      expect(() => reduce(s, { type: "tick" }, { now: T0, rand: Math.random })).not.toThrow();
+    }
+    const original = reduce(defaultState(T0, "vi"), { type: "feed" }, { now: T0, rand: Math.random }).state;
+    expect(importCode(exportCode(original), T0)).toEqual({ ...original, log: [], sync: emptySnapshot() });
+  });
   it("migrates v1 saves and round-trips export codes", () => {
     const m = migrate({ version: 1, name: "Bun", stats: { hunger: 20 }, seeds: 99, lang: "vi" }, T0);
     expect(m.version).toBe(2);

@@ -1,6 +1,8 @@
 // Sample posts for the demo timeline. Fictional accounts; marked as samples on the page.
 // The markup mirrors the selectors in shared/selectors.ts so the real chest placer runs on it.
 import { esc } from "../../shared/ui";
+import type { Lang } from "../../shared/state";
+import { st } from "./strings";
 
 const AUTHORS = [
   ["Mika Tran", "mikabuilds"],
@@ -32,7 +34,7 @@ const TEXTS = [
 
 let n = 0;
 
-export function samplePosts(count: number): string {
+export function samplePosts(count: number, lang: Lang = "en"): string {
   let html = "";
   for (let i = 0; i < count; i++, n++) {
     const [name, handle] = AUTHORS[n % AUTHORS.length];
@@ -43,7 +45,7 @@ export function samplePosts(count: number): string {
       <div class="post-body">
         <p class="post-head"><b>${esc(name)}</b> <span class="muted">@${handle} · ${mins}m</span></p>
         <div data-testid="tweetText" lang="en">${esc(text)}</div>
-        <div role="group" class="post-actions" aria-label="Post actions (sample)"><span>Reply</span><span>Repost</span><span>Like</span></div>
+        <div role="group" class="post-actions" aria-label="${st(lang, "postActions")}"><span>${st(lang, "reply")}</span><span>${st(lang, "repost")}</span><span>${st(lang, "like")}</span></div>
       </div>
     </article>`;
   }

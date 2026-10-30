@@ -26,7 +26,7 @@ export const PANEL_CSS = `${THEME_CSS}
 .sp-btn[disabled] { opacity: 0.55; cursor: not-allowed; }
 .sp-btn.primary { background: var(--sp-accent); color: var(--sp-accent-fg); border-color: transparent; font-weight: 600; }
 .sp-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.sp-tabs { display: flex; gap: 4px; padding: 8px; border-block-end: 1px solid var(--sp-line); overflow-x: auto; }
+.sp-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px; border-block-end: 1px solid var(--sp-line); }
 .sp-tab { min-block-size: 36px; padding: 6px 8px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; white-space: nowrap; }
 .sp-tab[aria-selected="true"] { background: var(--sp-surface); font-weight: 600; }
 .sp-body { padding: 12px; display: grid; gap: 16px; }
@@ -73,6 +73,7 @@ export interface PanelOptions {
   /** link added to the share post; empty means no link */
   shareUrl: string;
   initialTab?: Tab;
+  onTabChange?: (tab: Tab) => void;
   /** opens a URL the user chose to open (intent window) */
   open?: (url: string) => void;
 }
@@ -126,12 +127,13 @@ export function mountPanel(root: HTMLElement, opts: PanelOptions): () => void {
 
   const onClick = async (e: Event) => {
     const el = (e.target as HTMLElement).closest<HTMLElement>("[data-act],[data-tab]");
-    if (!el) return;
+    if (!el || !root.contains(el)) return;
     const s = store.get();
     if (!s) return;
     const lang = s.settings.lang;
     if (el.dataset.tab) {
       tab = el.dataset.tab as Tab;
+      opts.onTabChange?.(tab);
       msg = "";
       render();
       return;
@@ -194,6 +196,7 @@ export function mountPanel(root: HTMLElement, opts: PanelOptions): () => void {
     if (!el.dataset.tab || (e.key !== "ArrowRight" && e.key !== "ArrowLeft")) return;
     const i = TABS.indexOf(el.dataset.tab as Tab);
     tab = TABS[(i + (e.key === "ArrowRight" ? 1 : TABS.length - 1)) % TABS.length];
+    opts.onTabChange?.(tab);
     msg = "";
     render();
     root.querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.focus();
@@ -225,12 +228,12 @@ function body(tab: Tab, s: SaveState, lang: Lang, now: number): string {
   const nxt = nextStageXp(s.pet.xp);
   const card = `<div class="sp-card"><span data-pal-slot></span><div>
       <p class="sp-name">${esc(s.pet.name)}</p>
-      <p class="sp-small">${t(lang, `stage.${stageFor(s.pet.xp)}`)} · ${t(lang, `mood.${mood(s.pet.stats)}`)} · ${s.pet.xp} ${t(lang, "label.xp")}</p>
+      <p class="sp-small">${t(lang, `stage.${stageFor(s.pet.xp)}`)} · ${t(lang, `mood.${mood(s.pet.stats)}`)} · ${esc(String(s.pet.xp))} ${t(lang, "label.xp")}</p>
       <p class="sp-small">${nxt === null ? t(lang, "label.maxStage") : t(lang, "label.nextStage", { n: nxt - s.pet.xp })}</p>
-      <p class="sp-seeds">${s.seeds} ${t(lang, "label.seeds")}</p>
+      <p class="sp-seeds">${esc(String(s.seeds))} ${t(lang, "label.seeds")}</p>
     </div></div>`;
   if (tab === "pet") {
-    const food = itemsOfKind("food").map((f) => `${t(lang, `item.${f.id}` as Key)} ×${s.inventory[f.id] ?? 0}`).join(", ");
+    const food = itemsOfKind("food").map((f) => `${t(lang, `item.${f.id}` as Key)} ×${esc(String(s.inventory[f.id] ?? 0))}`).join(", ");
     return `${card}${liveStrip(lang, s, now)}${statBars(lang, s)}
       <div class="sp-row">
         <button class="sp-btn primary" data-act="feed" data-k="feed">${t(lang, "act.feed")}</button>
@@ -245,13 +248,13 @@ function body(tab: Tab, s: SaveState, lang: Lang, now: number): string {
   }
   if (tab === "shop") {
     const kinds: ItemKind[] = ["food", "toy", "hat", "wheel"];
-    return `<p class="sp-seeds">${s.seeds} ${t(lang, "label.seeds")}</p>${kinds
+    return `<p class="sp-seeds">${esc(String(s.seeds))} ${t(lang, "label.seeds")}</p>${kinds
       .map(
         (k) => `<section class="sp-section"><h3 class="sp-h">${t(lang, `kind.${k}`)}</h3><ul class="sp-list">${itemsOfKind(k)
           .map((it) => {
             const owned = it.kind !== "food" && s.owned.includes(it.id);
             const name = t(lang, `item.${it.id}` as Key);
-            const sub = it.kind === "food" ? t(lang, "label.have", { n: s.inventory[it.id] ?? 0 }) : owned ? t(lang, "label.owned") : "";
+            const sub = it.kind === "food" ? esc(t(lang, "label.have", { n: s.inventory[it.id] ?? 0 })) : owned ? t(lang, "label.owned") : "";
             return `<li class="sp-item"><div><p>${name}</p><p class="sp-small">${t(lang, "label.price", { n: it.price })}${sub ? ` · ${sub}` : ""}</p></div>
               <button class="sp-btn" data-act="buy" data-id="${it.id}" data-k="buy-${it.id}" ${owned ? "disabled" : ""} aria-label="${t(lang, "act.buy")} ${name}">${t(lang, "act.buy")}</button></li>`;
           })
@@ -279,7 +282,7 @@ function body(tab: Tab, s: SaveState, lang: Lang, now: number): string {
       <ul class="sp-list">${s.quests.list
         .map(
           (q) => `<li class="sp-item"><div class="sp-q"><p>${t(lang, `quest.${q.id}`)}</p><p class="sp-small">${t(lang, "quest.reward")}</p></div>
-          <p class="sp-num" style="inline-size:auto">${q.done ? t(lang, "quest.done") : `${q.progress}/${q.goal}`}</p></li>`,
+          <p class="sp-num" style="inline-size:auto">${q.done ? t(lang, "quest.done") : `${esc(String(q.progress))}/${esc(String(q.goal))}`}</p></li>`,
         )
         .join("")}</ul></section>
       <section class="sp-section"><h3 class="sp-h">${t(lang, "ach.title")}</h3><p class="sp-small">${t(lang, "ach.count", { n: s.achievements.length, m: ACHIEVEMENTS.length })}</p>

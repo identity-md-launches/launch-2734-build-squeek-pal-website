@@ -132,6 +132,30 @@ export function mountWidget(opts: WidgetOptions): Widget {
 
   const { store } = opts;
 
+  const bounds = () => opts.contained ? opts.container.getBoundingClientRect() : { left: 0, top: 0, right: innerWidth, bottom: innerHeight, width: innerWidth, height: innerHeight };
+  const clampPosition = () => {
+    const box = bounds();
+    const size = host.hasAttribute("data-min") ? { width: 24, height: 24 } : { width: SPRITE_W * SCALE, height: SPRITE_H * SCALE };
+    const pos = lastState?.settings.pos;
+    host.style.insetInlineEnd = `${Math.max(0, Math.min(pos?.x ?? 16, box.width - size.width))}px`;
+    host.style.insetBlockEnd = `${Math.max(0, Math.min(pos?.y ?? 16, box.height - size.height))}px`;
+  };
+  const positionPanel = () => {
+    if (panel.hidden) return;
+    const box = bounds(), r = host.getBoundingClientRect();
+    panel.style.inlineSize = `${Math.min(300, Math.max(0, box.width - 16))}px`;
+    const width = panel.getBoundingClientRect().width;
+    const left = Math.max(box.left + 8, Math.min(r.right - width, box.right - width - 8));
+    panel.style.insetInlineEnd = "auto";
+    panel.style.insetInlineStart = `${left - r.left}px`;
+    const above = Math.max(0, r.top - box.top - 8);
+    const below = Math.max(0, box.bottom - r.bottom - 8);
+    const openBelow = above < panel.scrollHeight && below > above;
+    panel.style.maxBlockSize = `${Math.min(520, openBelow ? below : above)}px`;
+    panel.style.insetBlockEnd = openBelow ? "auto" : "calc(100% + 8px)";
+    panel.style.insetBlockStart = openBelow ? "calc(100% + 8px)" : "auto";
+  };
+
   const applyState = (s: SaveState) => {
     lastState = s;
     const lang = s.settings.lang;
@@ -140,10 +164,7 @@ export function mountWidget(opts: WidgetOptions): Widget {
     host.toggleAttribute("data-min", s.settings.minimized);
     palBtn.setAttribute("aria-label", t(lang, "act.open", { name: s.pet.name }));
     bubble.setAttribute("aria-label", t(lang, "act.restore", { name: s.pet.name }));
-    if (s.settings.pos) {
-      host.style.insetInlineEnd = `${s.settings.pos.x}px`;
-      host.style.insetBlockEnd = `${s.settings.pos.y}px`;
-    }
+    clampPosition();
     if (!panel.hidden) renderPanel();
     draw();
   };
@@ -156,14 +177,14 @@ export function mountWidget(opts: WidgetOptions): Widget {
     const focusKey = (shadow.activeElement as HTMLElement | null)?.dataset.k;
     panel.setAttribute("aria-label", s.pet.name);
     panel.innerHTML = `
-      <div class="head"><p class="name">${esc(s.pet.name)}</p><p class="small">${s.seeds} ${t(lang, "label.seeds")}</p></div>
+      <div class="head"><p class="name">${esc(s.pet.name)}</p><p class="small">${esc(String(s.seeds))} ${t(lang, "label.seeds")}</p></div>
       ${statBars(lang, s)}
       <div class="row">
         <button class="btn primary" data-k="feed" data-act="feed">${t(lang, "act.feed")}</button>
         <button class="btn" data-k="play" data-act="play">${t(lang, "act.play")}</button>
         <button class="btn" data-k="clean" data-act="clean">${t(lang, "act.clean")}</button>
       </div>
-      ${waiting.length ? `<button class="btn" data-k="chest" data-act="chest" data-id="${waiting[0].id}">${t(lang, waiting[0].kind === "golden" ? "act.openGolden" : "act.openChest")} (${t(lang, "label.waiting", { n: waiting.length })})</button>` : ""}
+      ${waiting.length ? `<button class="btn" data-k="chest" data-act="chest" data-id="${esc(waiting[0].id)}">${t(lang, waiting[0].kind === "golden" ? "act.openGolden" : "act.openChest")} (${t(lang, "label.waiting", { n: waiting.length })})</button>` : ""}
       ${liveStrip(lang, s, Date.now())}
       <div class="row">
         <button class="link" data-k="min" data-act="min">${t(lang, "act.minimize")}</button>
@@ -171,6 +192,7 @@ export function mountWidget(opts: WidgetOptions): Widget {
         <button class="link" data-k="close" data-act="close">${t(lang, "act.close")}</button>
       </div>`;
     if (focusKey) panel.querySelector<HTMLElement>(`[data-k="${focusKey}"]`)?.focus();
+    positionPanel();
   };
 
   const setOpen = (open: boolean, focusPanel = false) => {
@@ -240,7 +262,7 @@ export function mountWidget(opts: WidgetOptions): Widget {
   let drag: { x: number; y: number; right: number; bottom: number; moved: boolean } | null = null;
   palBtn.addEventListener("pointerdown", (e) => {
     const r = host.getBoundingClientRect();
-    const box = opts.contained ? opts.container.getBoundingClientRect() : { right: innerWidth, bottom: innerHeight };
+    const box = bounds();
     drag = { x: e.clientX, y: e.clientY, right: box.right - r.right, bottom: box.bottom - r.bottom, moved: false };
     palBtn.setPointerCapture(e.pointerId);
   });
@@ -250,16 +272,17 @@ export function mountWidget(opts: WidgetOptions): Widget {
     const dy = e.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 5) return;
     drag.moved = true;
-    const box = opts.contained ? opts.container.getBoundingClientRect() : { width: innerWidth, height: innerHeight };
-    const x = Math.min(Math.max(0, drag.right - dx), box.width - SPRITE_W * SCALE);
-    const y = Math.min(Math.max(0, drag.bottom - dy), box.height - SPRITE_H * SCALE);
+    const box = bounds();
+    const x = Math.max(0, Math.min(drag.right - dx, box.width - SPRITE_W * SCALE));
+    const y = Math.max(0, Math.min(drag.bottom - dy, box.height - SPRITE_H * SCALE));
     host.style.insetInlineEnd = `${x}px`;
     host.style.insetBlockEnd = `${y}px`;
+    positionPanel();
   });
   palBtn.addEventListener("pointerup", () => {
     if (drag?.moved) {
-      const x = parseFloat(host.style.insetInlineEnd) || 16;
-      const y = parseFloat(host.style.insetBlockEnd) || 16;
+      const x = parseFloat(host.style.insetInlineEnd) || 0;
+      const y = parseFloat(host.style.insetBlockEnd) || 0;
       void store.dispatch({ type: "settings", patch: { pos: { x: Math.round(x), y: Math.round(y) } } });
     }
   });
@@ -287,6 +310,10 @@ export function mountWidget(opts: WidgetOptions): Widget {
   const panelTimer = window.setInterval(() => !panel.hidden && renderPanel(), 30_000);
   const onReduced = () => draw();
   reduced.addEventListener("change", onReduced);
+  const onResize = () => { clampPosition(); positionPanel(); };
+  window.addEventListener("resize", onResize);
+  const resizeObserver = new ResizeObserver(onResize);
+  if (opts.contained) resizeObserver.observe(opts.container);
 
   return {
     toast,
@@ -296,6 +323,8 @@ export function mountWidget(opts: WidgetOptions): Widget {
       clearInterval(themeTimer);
       clearInterval(panelTimer);
       reduced.removeEventListener("change", onReduced);
+      window.removeEventListener("resize", onResize);
+      resizeObserver.disconnect();
       host.remove();
     },
   };

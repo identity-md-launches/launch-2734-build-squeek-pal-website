@@ -1,5 +1,8 @@
 // The whole save lives under one versioned key in chrome.storage.local
 // (localStorage on the website demo). Migrations upgrade older saves.
+import { ITEMS, itemById } from "./catalog";
+import { ACHIEVEMENTS } from "./game";
+import { questsForDay, squeekDay } from "./rules";
 
 export const STORAGE_KEY = "squeekpal";
 export const SAVE_VERSION = 2;
@@ -152,6 +155,89 @@ function clampNum(v: unknown, lo: number, hi: number, fallback: number): number 
   return Math.min(hi, Math.max(lo, n));
 }
 
+function record(v: unknown): Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
+}
+
+const list = (v: unknown): unknown[] => Array.isArray(v) ? v : [];
+
+/** Reconstruct the schema; a checksum detects typos, not malicious save contents. */
+function sanitizeV2(raw: unknown, now: number): SaveState {
+  const r = record(raw);
+  const s = defaultState(now);
+  const time = (v: unknown, fallback = 0, hi = now) => clampNum(v, 0, hi, fallback);
+  const count = (v: unknown, fallback = 0, hi = 1e9) => Math.floor(clampNum(v, 0, hi, fallback));
+  const pet = record(r.pet), stats = record(pet.stats);
+  s.createdAt = time(r.createdAt, now);
+  s.lastTick = time(r.lastTick, now);
+  s.lastXSeen = time(r.lastXSeen);
+  s.pet.name = typeof pet.name === "string" && pet.name.trim() ? pet.name.trim().slice(0, 16) : s.pet.name;
+  for (const k of Object.keys(s.pet.stats) as StatName[]) s.pet.stats[k] = clampNum(stats[k], 0, 100, s.pet.stats[k]);
+  s.pet.xp = count(pet.xp);
+  for (const slot of ["hat", "wheel"] as const) {
+    const id = pet[slot];
+    s.pet[slot] = typeof id === "string" && itemById(id)?.kind === slot ? id : null;
+  }
+  s.seeds = count(r.seeds, s.seeds);
+  if (r.inventory !== undefined && r.inventory !== null && typeof r.inventory === "object" && !Array.isArray(r.inventory)) {
+    const inventory = record(r.inventory);
+    s.inventory = Object.fromEntries(ITEMS.filter(i => i.kind === "food" && Object.hasOwn(inventory, i.id)).map(i => [i.id, count(inventory[i.id], 0, 1e6)]));
+  }
+  s.owned = [...new Set(list(r.owned).filter((id): id is string => typeof id === "string" && !!itemById(id) && itemById(id)!.kind !== "food"))];
+  const chests = record(r.chests);
+  s.chests.seenSinceLast = count(chests.seenSinceLast);
+  s.chests.opened = count(chests.opened);
+  s.chests.goldenOpened = count(chests.goldenOpened);
+  s.chests.placedTimes = list(chests.placedTimes).filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v >= now - 3_600_000 && v <= now).slice(-12);
+  const chestIds = new Set<string>();
+  for (const entry of list(chests.pending).slice(-12)) {
+    const c = record(entry);
+    if (typeof c.id !== "string" || !/^[a-z0-9]{1,64}$/.test(c.id) || chestIds.has(c.id)) continue;
+    if (c.kind !== "normal" && c.kind !== "golden" && c.kind !== "bonus") continue;
+    if (typeof c.createdAt !== "number" || !Number.isFinite(c.createdAt) || c.createdAt < 0 || c.createdAt > now) continue;
+    chestIds.add(c.id);
+    s.chests.pending.push({ id: c.id, kind: c.kind, createdAt: c.createdAt });
+  }
+  const earn = record(r.earn);
+  s.earn = { hourStart: time(earn.hourStart, now), earnedThisHour: count(earn.earnedThisHour, 0, 300), totalRunSeeds: count(earn.totalRunSeeds) };
+  const counters = record(r.counters);
+  for (const k of Object.keys(s.counters) as (keyof SaveState["counters"])[]) s.counters[k] = count(counters[k]);
+  const quests = record(r.quests);
+  if (typeof quests.day === "number" && Number.isInteger(quests.day) && quests.day >= 0 && quests.day <= squeekDay(now)) {
+    s.quests.day = quests.day;
+    s.quests.list = questsForDay(quests.day).map(q => {
+      const saved = list(quests.list).map(record).find(v => v.id === q.id);
+      const progress = count(saved?.progress, 0, q.goal);
+      return { ...q, progress, done: progress >= q.goal };
+    });
+  }
+  s.achievements = ACHIEVEMENTS.filter(id => list(r.achievements).includes(id));
+  const festival = record(r.festival);
+  s.festival.until = time(festival.until, 0, now + 3_600_000);
+  s.festival.seenIds = [...new Set(list(festival.seenIds).filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 256))].slice(-200);
+  const sync = record(r.sync);
+  s.sync.fetchedAt = time(sync.fetchedAt);
+  s.sync.retryAfter = time(sync.retryAfter, 0, Number.MAX_SAFE_INTEGER);
+  s.sync.coreStatus = ["ACTIVE", "IDLE", "COUNTER_FAULT"].includes(sync.coreStatus as string) ? sync.coreStatus as string : null;
+  s.sync.freshness = typeof sync.freshness === "string" && /^(online|stale|offline|unknown)$/i.test(sync.freshness) ? sync.freshness : null;
+  for (const k of ["rpmMilli", "speedMmPerSecond", "distanceMm", "cumulativeWorkUnits", "blockHeight", "blockProgress"] as const) {
+    const v = sync[k];
+    s.sync[k] = typeof v === "string" && /^\d+(\.\d+)?$/.test(v) && v.length <= 100 ? v : null;
+  }
+  s.sync.reach = sync.reach === "ok" || sync.reach === "error" ? sync.reach : "never";
+  const settings = record(r.settings);
+  s.settings.lang = settings.lang === "vi" ? "vi" : "en";
+  for (const k of ["chestsOn", "palOn", "minimized"] as const) if (typeof settings[k] === "boolean") s.settings[k] = settings[k];
+  s.settings.hiddenPaths = [...new Set(list(settings.hiddenPaths).filter((p): p is string => typeof p === "string" && p.startsWith("/") && p.length <= 2048))].slice(-200);
+  const pos = record(settings.pos);
+  if (typeof pos.x === "number" && Number.isFinite(pos.x) && typeof pos.y === "number" && Number.isFinite(pos.y)) {
+    s.settings.pos = { x: count(pos.x, 0, 100_000), y: count(pos.y, 0, 100_000) };
+  }
+  const logKeys = ["log.chest", "log.golden", "log.run", "log.block", "log.festival"];
+  s.log = list(r.log).map(record).filter(l => typeof l.key === "string" && logKeys.includes(l.key)).slice(0, 12).map(l => ({ t: time(l.t), key: l.key as string, ...(l.n === undefined ? {} : { n: count(l.n) }) }));
+  return s;
+}
+
 /** Upgrade any known save shape to the current version. Unknown input gives a fresh save. */
 export function migrate(raw: unknown, now: number): SaveState {
   if (!raw || typeof raw !== "object") return defaultState(now);
@@ -166,25 +252,10 @@ export function migrate(raw: unknown, now: number): SaveState {
     s.pet.xp = clampNum(v1.xp, 0, 1e9, 0);
     s.seeds = clampNum(v1.seeds, 0, 1e9, s.seeds);
     if (v1.inventory && typeof v1.inventory === "object") s.inventory = { ...v1.inventory };
-    return s;
+    return sanitizeV2(s, now);
   }
   if (r.version === 2) {
-    // Fill any field a hand-edited or partial save is missing.
-    const base = defaultState(now);
-    const v2 = raw as Partial<SaveState>;
-    return {
-      ...base,
-      ...v2,
-      pet: { ...base.pet, ...v2.pet, stats: { ...base.pet.stats, ...v2.pet?.stats } },
-      chests: { ...base.chests, ...v2.chests },
-      earn: { ...base.earn, ...v2.earn },
-      counters: { ...base.counters, ...v2.counters },
-      quests: { ...base.quests, ...v2.quests },
-      festival: { ...base.festival, ...v2.festival },
-      sync: { ...base.sync, ...v2.sync },
-      settings: { ...base.settings, ...v2.settings },
-      version: 2,
-    } as SaveState;
+    return sanitizeV2(raw, now);
   }
   return defaultState(now);
 }

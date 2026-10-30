@@ -67,7 +67,7 @@ export function parseEvents(body: unknown): WheelEvent[] {
     const o = e as Json;
     const id = o.id ?? o.eventId;
     const type = o.type ?? o.kind ?? o.name;
-    const at = toMs(o.timestamp ?? o.createdAt ?? o.time ?? o.observedAt);
+    const at = toMs(o.occurredAt ?? o.recordedAt ?? o.timestamp ?? o.createdAt ?? o.time ?? o.observedAt);
     if ((typeof id === "string" || typeof id === "number") && typeof type === "string" && at > 0) {
       out.push({ id: String(id), type, at });
     }

@@ -24,12 +24,17 @@ export function drawCard(canvas: HTMLCanvasElement, s: SaveState) {
   ctx.restore();
   void SPRITE_W;
   const sys = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+  const fitText = (text: string, y: number, startSize: number, weight = 400) => {
+    let size = startSize;
+    do {
+      ctx.font = `${weight} ${size}px ${sys}`;
+    } while (ctx.measureText(text).width > 600 && --size > 18);
+    ctx.fillText(text, 560, y);
+  };
   ctx.fillStyle = "#2b1d14";
-  ctx.font = `700 76px ${sys}`;
-  ctx.fillText(s.pet.name, 560, 150);
-  ctx.font = `400 36px ${sys}`;
+  fitText(s.pet.name, 150, 76, 700);
   ctx.fillStyle = "#6b5544";
-  ctx.fillText(`${t(lang, `stage.${stageFor(s.pet.xp)}`)} · ${s.pet.xp} ${t(lang, "label.xp")} · ${s.seeds} ${t(lang, "label.seeds")}`, 560, 205);
+  fitText(`${t(lang, `stage.${stageFor(s.pet.xp)}`)} · ${s.pet.xp} ${t(lang, "label.xp")} · ${s.seeds} ${t(lang, "label.seeds")}`, 205, 36);
   const stats: StatName[] = ["hunger", "happiness", "energy", "cleanliness"];
   stats.forEach((k, i) => {
     const y = 260 + i * 56;
@@ -44,9 +49,8 @@ export function drawCard(canvas: HTMLCanvasElement, s: SaveState) {
   ctx.fillStyle = "#2b1d14";
   ctx.font = `700 40px ${sys}`;
   ctx.fillText("Squeek Pal", 560, 560);
-  ctx.font = `400 26px ${sys}`;
   ctx.fillStyle = "#6b5544";
-  ctx.fillText("Runs with Squeektoshi on Squeekchain", 560, 600);
+  fitText(t(lang, "card.tagline"), 600, 26);
 }
 
 export function downloadCard(doc: Document, s: SaveState) {
