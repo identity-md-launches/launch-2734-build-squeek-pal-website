@@ -1,0 +1,7 @@
+node_modules/
+build/
+site/public/downloads/
+site/public/og.png
+site/public/favicon.png
+test/scratch/
+*.log
